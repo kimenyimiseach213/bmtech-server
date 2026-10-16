@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bmtech-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bmtech_dev
+      POSTGRES_PASSWORD: bmtech_dev
+      POSTGRES_DB: bmtech
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - bmtech-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  bmtech-postgres-data:
