@@ -72,10 +72,12 @@ model AdminUser {
   email        String      @unique
   name         String?
   passwordHash String
+  credentialVersion Int    @default(0)
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
   auditLogs    AuditLog[]
   sessions     AdminSession[]
+  emailChange  AdminEmailChange?
 }
 
 model AdminSession {
@@ -85,8 +87,30 @@ model AdminSession {
   expiresAt DateTime
   revokedAt DateTime?
   createdAt DateTime  @default(now())
+  credentialVersion Int @default(0)
 
   @@index([adminId, expiresAt])
+}
+
+model AdminEmailChange {
+  id                String    @id @default(cuid())
+  adminId           String    @unique
+  admin             AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  currentEmail      String
+  newEmail          String
+  credentialVersion Int
+  tokenHash         String    @unique
+  expiresAt         DateTime
+  deliveredAt       DateTime?
+  createdAt         DateTime  @default(now())
+}
+
+model AuthRateLimit {
+  key       String   @id
+  attempts  Int      @default(1)
+  expiresAt DateTime
+
+  @@index([expiresAt])
 }
 
 model Category {

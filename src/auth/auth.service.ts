@@ -6,19 +6,21 @@ import { randomUUID } from 'node:crypto';
 import { compare, hash } from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { BootstrapDto, LoginDto } from '../common/dto';
+import { AuthRateLimitService } from './auth-rate-limit.service';
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly prisma: PrismaService, private readonly jwt: JwtService, private readonly config: ConfigService) {}
+  constructor(private readonly prisma: PrismaService, private readonly jwt: JwtService, private readonly config: ConfigService, private readonly limits: AuthRateLimitService) {}
 
   async login(dto: LoginDto) {
     const email = dto.email.trim().toLowerCase();
+    await this.limits.consume('login', email, 10);
     const admin = await this.prisma.adminUser.findUnique({ where: { email } });
     if (!admin || !(await compare(dto.password, admin.passwordHash))) throw new UnauthorizedException('Email or password is incorrect.');
     const jti = randomUUID();
     const expiresAt = new Date(Date.now() + this.expiryMilliseconds());
     const accessToken = await this.jwt.signAsync({ sub: admin.id, email: admin.email, jti });
-    await this.prisma.adminSession.create({ data: { id: jti, adminId: admin.id, expiresAt } });
+    await this.prisma.adminSession.create({ data: { id: jti, adminId: admin.id, expiresAt, credentialVersion: admin.credentialVersion } });
     return { accessToken, tokenType: 'Bearer', expiresIn: this.config.get<string>('JWT_EXPIRES_IN') || '12h', admin: { id: admin.id, email: admin.email, name: admin.name } };
   }
 

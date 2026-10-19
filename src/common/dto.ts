@@ -1,9 +1,9 @@
 import { Transform, Type } from 'class-transformer';
-import { Allow, IsArray, IsDefined, IsEmail, IsIn, IsInt, IsOptional, IsString, Max, Min, MinLength, ValidateNested } from 'class-validator';
+import { Allow, IsArray, IsDefined, IsEmail, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateNested } from 'class-validator';
 
 export class LoginDto {
-  @IsEmail() email!: string;
-  @IsString() @MinLength(1) password!: string;
+  @IsEmail() @MaxLength(254) email!: string;
+  @IsString() @MinLength(1) @MaxLength(1024) password!: string;
 }
 
 export class BootstrapDto {

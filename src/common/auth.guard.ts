@@ -16,8 +16,9 @@ export class AuthGuard implements CanActivate {
     try { payload = await this.jwt.verifyAsync<{ sub: string; email: string; jti: string }>(token); }
     catch { throw new UnauthorizedException('Admin session is invalid or expired.'); }
     if (!payload.jti) throw new UnauthorizedException('Admin session is invalid or expired.');
-    const session = await this.prisma.adminSession.findUnique({ where: { id: payload.jti } });
-    if (!session || session.adminId !== payload.sub || session.revokedAt || session.expiresAt <= new Date()) throw new UnauthorizedException('Admin session is invalid or expired.');
+    const session = await this.prisma.adminSession.findUnique({ where: { id: payload.jti }, include: { admin: { select: { credentialVersion: true } } } });
+    if (!session || session.adminId !== payload.sub || session.revokedAt || session.expiresAt <= new Date()
+      || session.credentialVersion !== session.admin.credentialVersion) throw new UnauthorizedException('Admin session is invalid or expired.');
     request.user = payload;
     return true;
   }

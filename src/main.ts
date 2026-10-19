@@ -20,7 +20,7 @@ async function bootstrap() {
   });
   app.use('/uploads', express.static(resolve(process.cwd(), process.env.UPLOAD_DIRECTORY || './uploads')));
   app.setGlobalPrefix('api/v1');
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true, validationError: { target: false, value: false } }));
 
   const swagger = new DocumentBuilder()
     .setTitle('BMTECH API')

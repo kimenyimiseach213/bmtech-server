@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 type MailField = { label: string; value: string };
@@ -8,6 +8,39 @@ export class MailService {
   private readonly logger = new Logger(MailService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  assertAccountMailConfigured() {
+    if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS || !(process.env.SMTP_FROM || process.env.SMTP_USER)) {
+      throw new ServiceUnavailableException('Account email delivery is not configured. Your login email has not changed.');
+    }
+  }
+
+  async sendAccountEmailChange(currentEmail: string, newEmail: string, verificationLink: string) {
+    this.assertAccountMailConfigured();
+    const nodemailer = await import('nodemailer');
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT || 587),
+      secure: process.env.SMTP_SECURE === 'true', requireTLS: true,
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+      connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 20_000,
+      logger: false, debug: false,
+    });
+    const send = async (to: string, subject: string, text: string) => {
+      const result = await transporter.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, subject, text });
+      if (!Array.isArray(result.accepted) || !result.accepted.some((address: string) => address.toLowerCase() === to.toLowerCase())
+        || result.rejected?.length) throw new ServiceUnavailableException('Email delivery was not accepted.');
+    };
+    try {
+      await send(currentEmail, 'BMTECH: email change requested',
+        `A change of your BMTECH administrator login email to ${newEmail} was requested. Your current login email remains active until the new address is verified. If you did not request this, change your password immediately from Account & Security.`);
+      await send(newEmail, 'Verify your BMTECH administrator email',
+        `Confirm this email address for your existing BMTECH administrator account:\n\n${verificationLink}\n\nThis single-use link expires in 20 minutes. If you did not request this change, ignore this email.`);
+    } catch {
+      // SMTP exceptions may contain recipient addresses or message bodies.
+      // Never log/rethrow those exceptions for account verification messages.
+      throw new ServiceUnavailableException('Account verification email delivery failed.');
+    } finally { transporter.close(); }
+  }
 
   async notifyRequest(kind: string, reference: string, fields: MailField[]) {
     try {

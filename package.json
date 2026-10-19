@@ -2,7 +2,9 @@
   "name": "bmtech-api",
   "version": "1.0.0",
   "private": true,
-  "engines": { "node": ">=20.11.1" },
+  "engines": {
+    "node": ">=20.11.1"
+  },
   "scripts": {
     "dev": "nest start --watch",
     "prebuild": "npm run prisma:generate",
@@ -38,6 +40,7 @@
     "ws": "^8.22.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10",
     "@nestjs/cli": "^11.0.10",
     "@types/express": "^5.0.3",
     "@types/multer": "^2.0.0",
