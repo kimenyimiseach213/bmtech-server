@@ -189,20 +189,30 @@ export class AdminService {
   }
 
   async remove(resource: string, id: string, adminId: string) {
-    let entity: string;
-    if (resource === 'products') { await this.prisma.product.delete({ where: { id } }); entity = 'Product'; }
-    else if (resource === 'categories') { await this.prisma.category.delete({ where: { id } }); entity = 'Category'; }
-    else if (resource === 'reviews') { await this.prisma.review.delete({ where: { id } }); entity = 'Review'; }
-    else throw new BadRequestException(`Deleting records from ${resource} is not supported.`);
-    await this.audit(adminId, 'DELETE', entity, id, {});
-    return { ok: true, id };
+    if (!['products', 'categories', 'reviews'].includes(resource)) throw new BadRequestException(`Deleting records from ${resource} is not supported.`);
+    const entity = this.entity(resource);
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        if (resource === 'categories') {
+          const products = await tx.product.count({ where: { categoryId: id } });
+          if (products > 0) throw new ConflictException('This category contains products. Move them to another category before deleting it.');
+          await tx.category.delete({ where: { id } });
+        } else if (resource === 'products') await tx.product.delete({ where: { id } });
+        else await tx.review.delete({ where: { id } });
+        // Keep deletion and its audit entry atomic: an audit failure must not
+        // leave a deleted record behind while the client reports a failure.
+        await tx.auditLog.create({ data: { adminId, action: 'DELETE', entity, entityId: id, details: {} } });
+        return { ok: true, id };
+      });
+    } catch (error) { this.rethrow(error); }
   }
 
   async addImages(productId: string, files: Express.Multer.File[], adminId: string) {
     if (!files.length) throw new BadRequestException('Select at least one image.');
     const product = await this.prisma.product.findUnique({ where: { id: productId }, include: { images: true } });
     if (!product) throw new NotFoundException('Product not found.');
-    const origin = (this.config.get<string>('PUBLIC_API_ORIGIN') || 'http://localhost:3001').replace(/\/$/, '');
+    const configuredOrigin = (this.config.get<string>('PUBLIC_API_ORIGIN') || 'http://localhost:3001').replace(/\/$/, '');
+    const origin = configuredOrigin.endsWith('/api/v1') ? configuredOrigin.slice(0, -7) : configuredOrigin;
     const blobToken = process.env.BLOB_READ_WRITE_TOKEN;
     const uploaded = blobToken ? await Promise.all(files.map(async (file) => {
       const extension = ({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' } as Record<string, string>)[file.mimetype] || '.img';
@@ -283,7 +293,11 @@ export class AdminService {
   private rethrow(error: unknown): never {
     if (error instanceof BadRequestException || error instanceof NotFoundException || error instanceof ConflictException) throw error;
     if (isUniqueError(error)) throw new ConflictException('A record with this slug or SKU already exists.');
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') throw new ConflictException('This record is still used by another record and cannot be removed.');
+    // Prisma's Neon adapter can wrap PostgreSQL RESTRICT/foreign-key errors
+    // as UnknownRequestError instead of the normal P2003 (observed on Render).
+    const foreignKeyError = error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003'
+      || error instanceof Prisma.PrismaClientUnknownRequestError && /PostgresError\s*\{[^}]*code:\s*"(?:23001|23503)"/.test(error.message);
+    if (foreignKeyError) throw new ConflictException('This record is still used by another record and cannot be removed.');
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') throw new NotFoundException('The requested record was not found.');
     throw error;
   }
