@@ -117,6 +117,9 @@ export class AdminService {
           isActive: data.isActive === undefined ? undefined : this.boolean(data.isActive, false),
         } });
         result = { ...category, name: { en: category.nameEn, fr: category.nameFr } };
+      } else if (resource === 'orders') {
+        const status = this.enumValue(data.status, ['PENDING', 'CONFIRMED', 'PROCESSING', 'FULFILLED', 'CANCELLED'], 'PENDING');
+        result = await this.prisma.order.update({ where: { id }, data: { status } });
       } else if (resource === 'quotation-requests') {
         result = await this.prisma.quotationRequest.update({ where: { id }, data: {
           status: data.status === undefined ? undefined : this.enumValue(data.status, ['OPEN', 'IN_REVIEW', 'QUOTED', 'ACCEPTED', 'REJECTED', 'CLOSED'], 'OPEN'),
@@ -178,7 +181,7 @@ export class AdminService {
     if (payment.status !== 'UNVERIFIED') throw new BadRequestException('Only unverified payments can be manually verified.');
     const updated = await this.prisma.$transaction(async (tx) => {
       const saved = await tx.payment.update({ where: { id: paymentId }, data: { status: 'VERIFIED', verifiedAt: new Date() } });
-      await tx.order.update({ where: { id: payment.orderId }, data: { paymentStatus: 'VERIFIED', status: payment.order.status === 'PENDING' ? 'CONFIRMED' : undefined } });
+      await tx.order.update({ where: { id: payment.orderId }, data: { paymentStatus: 'VERIFIED' } });
       await tx.auditLog.create({ data: { adminId, action: 'VERIFY_PAYMENT', entity: 'Payment', entityId: paymentId, details: { orderId: payment.orderId, orderReference: payment.order.reference, amount: Number(payment.amount) } } });
       return saved;
     });
