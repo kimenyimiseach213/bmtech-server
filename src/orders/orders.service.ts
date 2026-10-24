@@ -28,7 +28,7 @@ export class OrdersService {
         });
         if (!product) throw new NotFoundException(`Product “${item.productSlug}” is unavailable.`);
         if (product.priceMode !== 'FIXED' || product.price === null) throw new BadRequestException(`${product.nameEn} requires a quotation and cannot be checked out.`);
-        if (product.stockQuantity < item.quantity) throw new BadRequestException(`There is not enough stock for ${product.nameEn}.`);
+        if (!product.isAvailable || product.stockQuantity < item.quantity) throw new BadRequestException(`There is not enough stock for ${product.nameEn}.`);
         const unitPrice = product.price;
         const lineTotal = unitPrice.mul(item.quantity);
         total = total.plus(lineTotal);

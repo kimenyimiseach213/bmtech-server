@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { Allow, IsArray, IsDefined, IsEmail, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateNested } from 'class-validator';
+import { Allow, ArrayMaxSize, ArrayMinSize, IsArray, IsDefined, IsEmail, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateNested } from 'class-validator';
 
 export class LoginDto {
   @IsEmail() @MaxLength(254) email!: string;
@@ -89,7 +89,17 @@ export class CreateReviewDto {
   @IsOptional() @IsString() clientReference?: string;
 }
 
+export class ValidateCartDto {
+  @ArrayMinSize(1) @ArrayMaxSize(100) @IsArray() @ValidateNested({ each: true }) @Type(() => OrderLineDto)
+  items!: OrderLineDto[];
+}
+
 export class AdminRecordDto {
+  @Allow() @IsOptional() isUndersale?: unknown;
+  @Allow() @IsOptional() shortDescription?: unknown;
+  @Allow() @IsOptional() specifications?: unknown;
+  @Allow() @IsOptional() isAvailable?: unknown;
+  @Allow() @IsOptional() ceoWhatsapp?: unknown;
   @Allow() @IsOptional() id?: unknown;
   @Allow() @IsOptional() slug?: unknown;
   @Allow() @IsOptional() sku?: unknown;

@@ -11,6 +11,7 @@ datasource db {
 enum ProductCondition {
   NEW
   USED
+  REFURBISHED
 }
 
 enum PriceMode {
@@ -137,6 +138,10 @@ model Product {
   model                  String           @default("")
   nameEn                 String
   nameFr                 String
+  isUndersale            Boolean          @default(false)
+  shortDescription       String           @default("")
+  specifications         Json             @default("[]")
+  isAvailable            Boolean          @default(true)
   descriptionEn          String           @default("")
   descriptionFr          String           @default("")
   condition              ProductCondition @default(NEW)
@@ -292,6 +297,7 @@ model Review {
 
 model CompanySettings {
   id           String   @id @default("default")
+  ceoWhatsapp  String   @default("")
   companyName  String   @default("BMTECH")
   phone        String   @default("0788494513")
   whatsapp     String   @default("250788494513")

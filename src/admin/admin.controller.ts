@@ -1,18 +1,13 @@
 import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UploadedFiles, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { diskStorage, memoryStorage } from 'multer';
-import { mkdirSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
-import { resolve } from 'node:path';
+import { memoryStorage } from 'multer';
 import type { Request } from 'express';
 import { AuthGuard } from '../common/auth.guard';
 import { AdminRecordDto, ImageReorderDto, ReorderDto } from '../common/dto';
 import { AdminService } from './admin.service';
 
 type AdminRequest = Request & { user: { sub: string; email: string } };
-const uploadRoot = () => resolve(process.cwd(), process.env.UPLOAD_DIRECTORY || './uploads');
-const useBlobStorage = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -31,16 +26,7 @@ export class AdminController {
   @Post('payments/:paymentId/verify') verifyPayment(@Param('paymentId') id: string, @Req() req: AdminRequest) { return this.admin.verifyPayment(id, req.user.sub); }
   @Post('products/:id/images')
   @UseInterceptors(FilesInterceptor('files', 12, {
-    storage: useBlobStorage() ? memoryStorage() : diskStorage({
-      destination: (_request, _file, callback) => {
-        try { mkdirSync(uploadRoot(), { recursive: true }); callback(null, uploadRoot()); }
-        catch (error) { callback(error as Error, uploadRoot()); }
-      },
-      filename: (_request, file, callback) => {
-        const extension = ({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' } as Record<string, string>)[file.mimetype];
-        callback(null, `${Date.now()}-${randomBytes(8).toString('hex')}${extension || '.img'}`);
-      },
-    }),
+    storage: memoryStorage(),
     limits: { fileSize: Math.min(Number(process.env.MAX_UPLOAD_BYTES || 8 * 1024 * 1024), process.env.VERCEL ? 4_000_000 : Number.MAX_SAFE_INTEGER) },
     fileFilter: (_request, file, callback) => {
       if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.mimetype)) return callback(new BadRequestException('Only JPEG, PNG, WebP and GIF images can be uploaded.'), false);

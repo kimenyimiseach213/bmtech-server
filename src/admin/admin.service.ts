@@ -2,7 +2,8 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { del, put } from '@vercel/blob';
-import { unlink } from 'node:fs/promises';
+import { mkdir, writeFile, unlink } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { basename, resolve } from 'node:path';
 import { AdminRecordDto, ImageReorderDto } from '../common/dto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -51,6 +52,7 @@ export class AdminService {
     const data = body as Record<string, any>;
     try {
       if (resource === 'products') {
+        await this.validateSaleFields(data);
         const names = this.names(data, 'name');
         const descriptions = this.names(data, 'description');
         const slug = slugify(String(data.slug || names.en));
@@ -58,9 +60,10 @@ export class AdminService {
         if (!data.categoryId) throw new BadRequestException('Choose a product category.');
         const priceMode = this.enumValue(data.priceMode, ['FIXED', 'QUOTE_REQUIRED'], 'FIXED');
         const product = await this.prisma.product.create({ data: {
+          ...this.saleFields(data),
           slug, sku: data.sku || null, categoryId: String(data.categoryId), brand: String(data.brand || ''), model: String(data.model || ''),
           nameEn: names.en, nameFr: names.fr, descriptionEn: descriptions.en, descriptionFr: descriptions.fr,
-          condition: this.enumValue(data.condition, ['NEW', 'USED'], 'NEW'), priceMode,
+          condition: this.enumValue(data.condition, ['NEW', 'USED', 'REFURBISHED'], 'NEW'), priceMode,
           price: priceMode === 'QUOTE_REQUIRED' ? null : this.money(data.price, true),
           stockQuantity: this.integer(data.stockQuantity ?? 0, 'Stock quantity'), installationAvailable: this.boolean(data.installationAvailable, false), isPublished: this.boolean(data.isPublished, true),
         }, include: { category: true, images: true } });
@@ -89,16 +92,18 @@ export class AdminService {
       if (resource === 'products') {
         const current = await this.prisma.product.findUnique({ where: { id }, include: { category: true, images: true } });
         if (!current) throw new NotFoundException('Product not found.');
+        await this.validateSaleFields(data, current);
         const names = this.names(data, 'name', current.nameEn, current.nameFr);
         const descriptions = this.names(data, 'description', current.descriptionEn, current.descriptionFr);
         const mode = data.priceMode === undefined ? current.priceMode : this.enumValue(data.priceMode, ['FIXED', 'QUOTE_REQUIRED'], current.priceMode);
         if (!names.en || !names.fr) throw new BadRequestException('Product names in English and French are required.');
         result = await this.prisma.product.update({ where: { id }, data: {
+          ...this.saleFields(data),
           slug: data.slug === undefined ? undefined : slugify(String(data.slug)), sku: data.sku === undefined ? undefined : data.sku || null,
           categoryId: data.categoryId === undefined ? undefined : String(data.categoryId), brand: data.brand === undefined ? undefined : String(data.brand),
           model: data.model === undefined ? undefined : String(data.model), nameEn: names.en, nameFr: names.fr,
           descriptionEn: descriptions.en, descriptionFr: descriptions.fr,
-          condition: data.condition === undefined ? undefined : this.enumValue(data.condition, ['NEW', 'USED'], current.condition), priceMode: mode,
+          condition: data.condition === undefined ? undefined : this.enumValue(data.condition, ['NEW', 'USED', 'REFURBISHED'], current.condition), priceMode: mode,
           price: mode === 'QUOTE_REQUIRED' ? null : data.price === undefined ? current.price === null ? this.money(undefined, true) : undefined : this.money(data.price, true),
           stockQuantity: data.stockQuantity === undefined ? undefined : this.integer(data.stockQuantity, 'Stock quantity'),
           installationAvailable: data.installationAvailable === undefined ? undefined : this.boolean(data.installationAvailable, false),
@@ -155,10 +160,11 @@ export class AdminService {
 
   async updateSettings(body: AdminRecordDto, adminId: string) {
     const data = body as Record<string, any>;
+    if (data.ceoWhatsapp !== undefined) data.ceoWhatsapp = this.phoneNumber(data.ceoWhatsapp);
     const result = await this.prisma.companySettings.upsert({ where: { id: 'default' }, create: {
-      id: 'default', companyName: this.text(data.companyName, 'BMTECH'), phone: this.text(data.phone, '0788494513'), whatsapp: this.text(data.whatsapp, '250788494513'),
+      id: 'default', ceoWhatsapp: this.text(data.ceoWhatsapp), companyName: this.text(data.companyName, 'BMTECH'), phone: this.text(data.phone, '0788494513'), whatsapp: this.text(data.whatsapp, '250788494513'),
       email: this.text(data.email), businessHours: this.text(data.businessHours), aboutEn: this.text(data.aboutEn), aboutFr: this.text(data.aboutFr),
-    }, update: Object.fromEntries(['companyName', 'phone', 'whatsapp', 'email', 'businessHours', 'aboutEn', 'aboutFr'].filter((key) => data[key] !== undefined).map((key) => [key, String(data[key])])) });
+    }, update: Object.fromEntries(['companyName', 'ceoWhatsapp', 'phone', 'whatsapp', 'email', 'businessHours', 'aboutEn', 'aboutFr'].filter((key) => data[key] !== undefined).map((key) => [key, String(data[key])])) });
     await this.audit(adminId, 'UPDATE', 'CompanySettings', result.id, data);
     return { data: result };
   }
@@ -209,32 +215,67 @@ export class AdminService {
 
   async addImages(productId: string, files: Express.Multer.File[], adminId: string) {
     if (!files.length) throw new BadRequestException('Select at least one image.');
+    for (const file of files) {
+      const b = file.buffer;
+      const matches = b && ({
+        'image/jpeg': b.length >= 3 && b[0] === 255 && b[1] === 216 && b[2] === 255,
+        'image/png': b.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])),
+        'image/webp': b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP',
+        'image/gif': ['GIF87a', 'GIF89a'].includes(b.toString('ascii', 0, 6)),
+      } as Record<string, boolean>)[file.mimetype];
+      if (!matches || b.length > Number(process.env.MAX_UPLOAD_BYTES || 8388608)) throw new BadRequestException('Invalid image content or image exceeds the configured size limit.');
+    }
     const product = await this.prisma.product.findUnique({ where: { id: productId }, include: { images: true } });
     if (!product) throw new NotFoundException('Product not found.');
+    if (product.images.length + files.length > 12) throw new BadRequestException('A product supports up to 12 photos.');
+    if (!process.env.BLOB_READ_WRITE_TOKEN && (process.env.VERCEL || (process.env.NODE_ENV === 'production' && !(process.env.PERSISTENT_UPLOADS === 'true' && process.env.UPLOAD_DIRECTORY)))) throw new BadRequestException('Configure BLOB_READ_WRITE_TOKEN, or a durable UPLOAD_DIRECTORY with PERSISTENT_UPLOADS=true, before uploading production photos.');
     const configuredOrigin = (this.config.get<string>('PUBLIC_API_ORIGIN') || 'http://localhost:3001').replace(/\/$/, '');
     const origin = configuredOrigin.endsWith('/api/v1') ? configuredOrigin.slice(0, -7) : configuredOrigin;
     const blobToken = process.env.BLOB_READ_WRITE_TOKEN;
     const uploaded = blobToken ? await Promise.all(files.map(async (file) => {
       const extension = ({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' } as Record<string, string>)[file.mimetype] || '.img';
-      const blob = await put(`products/${Date.now()}-${Math.random().toString(36).slice(2)}${extension}`, file.buffer, { access: 'public', token: blobToken });
+      const blob = await put(`products/${Date.now()}-${Math.random().toString(36).slice(2)}${extension}`, file.buffer, { access: 'public', token: blobToken, contentType: file.mimetype, addRandomSuffix: true });
       return blob.url;
-    })) : files.map((file) => `${origin}/uploads/${encodeURIComponent(file.filename)}`);
-    const created = await this.prisma.$transaction(files.map((file, index) => this.prisma.productImage.create({ data: {
-      productId, url: uploaded[index], alt: product.nameEn,
-      sortOrder: product.images.length + index, isCover: product.images.length === 0 && index === 0,
-    } })));
-    await this.audit(adminId, 'UPLOAD_IMAGES', 'Product', productId, { imageIds: created.map((image) => image.id) });
-    return { data: created };
+    })) : await Promise.all(files.map(async file => {
+      const extension = ({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' } as Record<string, string>)[file.mimetype];
+      const filename = randomBytes(16).toString('hex') + extension;
+      const directory = resolve(process.cwd(), this.config.get<string>('UPLOAD_DIRECTORY') || './uploads');
+      await mkdir(directory, { recursive: true });
+      await writeFile(resolve(directory, filename), file.buffer);
+      return origin + '/uploads/' + filename;
+    }));
+    try {
+      const created = await this.prisma.$transaction(async tx => {
+        const images = [];
+        for (let index = 0; index < files.length; index++) images.push(await tx.productImage.create({ data: {
+          productId, url: uploaded[index], alt: product.nameEn,
+          sortOrder: product.images.length + index, isCover: product.images.length === 0 && index === 0,
+        } }));
+        await tx.auditLog.create({ data: { adminId, action: 'UPLOAD_IMAGES', entity: 'Product', entityId: productId, details: { imageIds: images.map(image => image.id) } } });
+        return images;
+      });
+      return { data: created };
+    } catch (error) {
+      for (const url of uploaded) {
+        try {
+          if (blobToken) await del(url, { token: blobToken });
+          else await unlink(resolve(process.cwd(), this.config.get<string>('UPLOAD_DIRECTORY') || './uploads', basename(new URL(url).pathname)));
+        } catch { /* Preserve the original database error. */ }
+      }
+      throw error;
+    }
   }
 
   async deleteImage(productId: string, imageId: string, adminId: string) {
     const image = await this.prisma.productImage.findFirst({ where: { id: imageId, productId } });
     if (!image) throw new NotFoundException('Product image not found.');
+    const product = await this.prisma.product.findUnique({ where: { id: productId }, include: { _count: { select: { images: true } } } });
+    if (product?.isUndersale && product.isPublished && product._count.images <= 1) throw new BadRequestException('Unpublish this product before removing its last photo.');
     await this.prisma.productImage.delete({ where: { id: imageId } });
     if (image.url.includes('.public.blob.vercel-storage.com/')) {
       try { await del(image.url, { token: process.env.BLOB_READ_WRITE_TOKEN }); } catch { /* The database record has already been removed. */ }
     } else if (image.url.includes('/uploads/')) {
-      const file = resolve(process.cwd(), process.env.UPLOAD_DIRECTORY || './uploads', basename(decodeURIComponent(new URL(image.url).pathname)));
+      const file = resolve(process.cwd(), this.config.get<string>('UPLOAD_DIRECTORY') || './uploads', basename(decodeURIComponent(new URL(image.url).pathname)));
       try { await unlink(file); } catch { /* The database record has already been removed. */ }
     }
     const remaining = await this.prisma.productImage.findMany({ where: { productId }, orderBy: { sortOrder: 'asc' } });
@@ -253,6 +294,46 @@ export class AdminService {
     return { ok: true };
   }
 
+  private phoneNumber(value: unknown) {
+    const raw = this.text(value);
+    if (!raw) return '';
+    if (!/^\+?[1-9][0-9 ()-]{6,24}$/.test(raw)) throw new BadRequestException('CEO WhatsApp Number must include the country code (7-15 digits).');
+    const digits = raw.replace(/\D/g, '');
+    if (!/^[1-9]\d{6,14}$/.test(digits)) throw new BadRequestException('CEO WhatsApp Number must include the country code (7-15 digits).');
+    return digits;
+  }
+  private async validateSaleFields(data: Record<string, any>, current?: any) {
+    for (const key of ['name', 'description']) {
+      if (data[key] !== undefined) {
+        if (!data[key] || typeof data[key] !== 'object' || Array.isArray(data[key])) throw new BadRequestException(key + ' must contain English and French text.');
+        for (const locale of ['en', 'fr']) if (data[key][locale] !== undefined) {
+          if (typeof data[key][locale] !== 'string') throw new BadRequestException(key + ' must be text.');
+          if (data[key + (locale === 'en' ? 'En' : 'Fr')] === undefined) data[key + (locale === 'en' ? 'En' : 'Fr')] = data[key][locale];
+        }
+      }
+    }
+    for (const [key, limit] of Object.entries({ nameEn: 200, nameFr: 200, slug: 200, sku: 200, shortDescription: 500, descriptionEn: 20000, descriptionFr: 20000, brand: 200, model: 200 })) {
+      if (data[key] !== undefined && (typeof data[key] !== 'string' || data[key].length > limit)) throw new BadRequestException(`${key} must be text up to ${limit} characters.`);
+    }
+    if (data.specifications !== undefined && (!Array.isArray(data.specifications) || data.specifications.length > 100 || data.specifications.some((s: any) => !s || typeof s.label !== 'string' || !s.label.trim() || s.label.length > 200 || typeof s.value !== 'string' || s.value.length > 2000))) throw new BadRequestException('Specifications must contain up to 100 label/value pairs.');
+    if (data.isAvailable !== undefined && typeof data.isAvailable !== 'boolean') throw new BadRequestException('Availability must be true or false.');
+    if (data.isUndersale !== undefined && typeof data.isUndersale !== 'boolean') throw new BadRequestException('Undersale must be true or false.');
+    if (data.isUndersale ?? current?.isUndersale) {
+      if (this.enumValue(data.priceMode ?? current?.priceMode, ['FIXED', 'QUOTE_REQUIRED'], 'FIXED') !== 'FIXED') throw new BadRequestException('Undersale products need a fixed price.');
+      this.money(data.price !== undefined ? data.price : current?.price === null || current?.price === undefined ? null : Number(current.price), true);
+      if ((data.isPublished ?? current?.isPublished ?? true) && !current?.images?.length) throw new BadRequestException('Save at least one product photo before publishing.');
+      if (!this.text(data.descriptionEn ?? current?.descriptionEn)) throw new BadRequestException('A full description is required for Undersale.');
+      if (!this.text(data.shortDescription ?? current?.shortDescription)) throw new BadRequestException('A short description is required for Undersale.');
+      const category = await this.prisma.category.upsert({ where: { slug: 'electronics' }, create: { slug: 'electronics', nameEn: 'Electronics', nameFr: 'Electronique' }, update: {} });
+      data.categoryId = category.id;
+    }
+  }
+  private saleFields(data: Record<string, any>) {
+    return {
+      isUndersale: data.isUndersale, shortDescription: data.shortDescription,
+      specifications: data.specifications, isAvailable: data.isAvailable,
+    };
+  }
   private async audit(adminId: string, action: string, entity: string, entityId: string, details: unknown) {
     await this.prisma.auditLog.create({ data: { adminId, action, entity, entityId, details: details as Prisma.InputJsonValue } });
   }
@@ -263,7 +344,7 @@ export class AdminService {
   private text(value: unknown, fallback = '') { return value === undefined || value === null ? fallback : String(value).trim(); }
   private integer(value: unknown, label: string) {
     const number = Number(value);
-    if (!Number.isInteger(number) || number < 0) throw new BadRequestException(`${label} must be a non-negative whole number.`);
+    if (!Number.isInteger(number) || number < 0 || number > 2147483647) throw new BadRequestException(`${label} must be a non-negative whole number.`);
     return number;
   }
   private money(value: unknown, required: boolean) {
@@ -271,8 +352,9 @@ export class AdminService {
       if (required) throw new BadRequestException('A fixed price is required for fixed-price products.');
       return null;
     }
+    if (!['number', 'string'].includes(typeof value) || (typeof value === 'string' && !/^\d+(?:\.\d{1,2})?$/.test(value))) throw new BadRequestException('Price must be a number with up to two decimal places.');
     const number = Number(value);
-    if (!Number.isFinite(number) || number < 0) throw new BadRequestException('Price must be a valid non-negative amount.');
+    if (!Number.isFinite(number) || number < 0 || number >= 10000000000 || Math.abs(number * 100 - Math.round(number * 100)) > 0.0001) throw new BadRequestException('Price must be a valid non-negative amount.');
     return new Prisma.Decimal(String(value));
   }
   private boolean(value: unknown, fallback: boolean) {
