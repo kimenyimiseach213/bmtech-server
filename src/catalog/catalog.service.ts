@@ -68,7 +68,7 @@ export class CatalogService {
       lines.push({ product: this.productView(row), quantity });
     }
     const settings = await this.publicSettings();
-    return { lines, changes, ceoWhatsapp: settings.ceoWhatsapp, currency: settings.currency };
+    return { lines, changes, ceoWhatsapp: settings.ceoWhatsapp, whatsapp: settings.whatsapp, currency: settings.currency };
   }
 
   private productView(row: any) {

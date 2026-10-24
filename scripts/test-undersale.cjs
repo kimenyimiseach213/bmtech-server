@@ -74,15 +74,19 @@ test('multiple persistent uploads, bad content/type/size, cover selection, reord
   assert.equal((await upload(png, 'image/png')).status, 201);
   saved = (await req('admin/products')).data.find(p => p.id === product.id); assert.equal(saved.images.length, 2);
 });
-test('publish, edit, CEO setting and current cart validation preserve prices and never create orders', async () => {
+test('publish, edit, CEO preference and business WhatsApp fallback preserve prices without creating orders', async () => {
   assert.equal((await req(`admin/products/${product.id}`, 'PATCH', { isPublished: true })).status, 200);
   let listing = (await req('products', 'GET', undefined, false)).data; assert.equal(listing.length, 1); assert.equal(listing[0].images.length, 2); assert.equal(listing[0].shortDescription, 'Compact stereo amplifier');
   assert.equal((await req('admin/settings', 'PATCH', { ceoWhatsapp: '0788494513' })).status, 400);
-  assert.equal((await req('admin/settings', 'PATCH', { ceoWhatsapp: '+999 (123) 45678' })).status, 200);
+  assert.equal((await req('admin/settings', 'PATCH', { whatsapp: '+999 111 12222', ceoWhatsapp: '+999 (123) 45678' })).status, 200);
   assert.equal((await req('settings/public', 'GET', undefined, false)).data.ceoWhatsapp, '99912345678');
   await req(`admin/products/${product.id}`, 'PATCH', { price: 18000.50, stockQuantity: 2 });
   const result = await req('cart/validate', 'POST', { items: [{ productSlug: product.slug, quantity: 2 }, { productSlug: product.slug, quantity: 2 }, { productSlug: 'deleted-product', quantity: 1 }] }, false);
   assert.equal(result.status, 201); assert.equal(result.data.lines.length, 1); assert.equal(result.data.lines[0].quantity, 2); assert.equal(result.data.lines[0].product.price, 18000.5); assert.equal(result.data.changes.length, 2);
+  assert.equal(result.data.ceoWhatsapp, '99912345678'); assert.equal(result.data.whatsapp, '+999 111 12222');
+  await req('admin/settings', 'PATCH', { ceoWhatsapp: '' });
+  const fallback = await req('cart/validate', 'POST', { items: [{ productSlug: product.slug, quantity: 1 }] }, false);
+  assert.equal(fallback.data.ceoWhatsapp, ''); assert.equal(fallback.data.whatsapp, '+999 111 12222');
   assert.equal(await prisma.order.count(), 0); assert.equal(await prisma.payment.count(), 0); assert.equal((await prisma.product.findUnique({ where: { id: product.id } })).stockQuantity, 2);
 });
 test('sold out, unavailable, unpublished, inactive categories and deleted products cannot be ordered', async () => {

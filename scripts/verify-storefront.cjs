@@ -28,7 +28,7 @@ async function main() {
   const optimized=await fetch(web+'/_next/image?url='+encodeURIComponent(media)+'&w=640&q=75');assert.equal(optimized.status,200);assert.match(optimized.headers.get('content-type'),/^image\//);assert.ok((await optimized.arrayBuffer()).byteLength>100);
   console.log('PASS: saved JPEG bytes arrive through the media proxy and Next image optimization.');
   await call('admin/settings','PATCH',{ceoWhatsapp:'+99912345678'});
-  const cart=await call('cart/validate','POST',{items:[{productSlug:created.slug,quantity:3}]});assert.equal(cart.lines[0].quantity,2);assert.equal(cart.ceoWhatsapp,'99912345678');assert.equal(cart.changes.length,1);
+  const cart=await call('cart/validate','POST',{items:[{productSlug:created.slug,quantity:3}]});assert.equal(cart.lines[0].quantity,2);assert.equal(cart.ceoWhatsapp,'99912345678');assert.ok(cart.whatsapp);assert.equal(cart.changes.length,1);
   await call('admin/products/'+created.id,'PATCH',{price:13000.5});assert.equal((await call('products/'+created.slug)).price,13000.5);
   await call('admin/products/'+created.id,'PATCH',{isPublished:false});assert.equal((await fetch(api+'/products/'+created.slug)).status,404);
   await call('admin/products/'+created.id,'PATCH',{isPublished:true});
